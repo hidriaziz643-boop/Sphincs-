@@ -1,28 +1,22 @@
 """
-SLH-DSA / SPHINCS+ (NIST FIPS 205) – gemeinsame Hilfsfunktionen
+Gemeinsame Bausteine fuer SLH-DSA / SPHINCS+ (FIPS 205).
 
-Enthaelt:
-  - Algorithmus 1: gen_len2
-  - Algorithmus 2: toInt
-  - Algorithmus 3: toByte
-  - Algorithmus 4: base_2b
-  - ADRS – 32-Byte-Adresse (Abschnitt 4.2 / 4.3)
-  - Hash-/PRF-Funktionen H_msg, PRF, PRF_msg, F, H, T (Abschnitt 11.1, SHAKE-Instanz)
-  - Algorithmus 5: chain
-  - Params – Buendelung der Parameter n, lgw, w, len1, len2, len_, h, h' (hp), d, k, a, m
-  - NIST_PARAMETERSAETZE – Referenzwerte aus Tabelle 2
-
-Alle anderen Module (wots.py, xmss.py, hypertree.py, fors.py, slh_dsa.py)
-importieren ihre Bausteine aus dieser Datei.
+Fast alles, was die anderen Module (wots.py, xmss.py, hypertree.py, fors.py,
+slh_dsa.py) brauchen, steckt hier drin: die Bit-/Byte-Konvertierungen aus
+Abschnitt 4.4 (Alg. 1-4), die ADRS-Adresse aus Abschnitt 4.2/4.3, die
+Hash-/PRF-Funktionen aus Abschnitt 11.1 (bei uns durchgehend SHAKE256), die
+Kettenfunktion chain (Alg. 5) und schliesslich das Params-Objekt, in dem alle
+abgeleiteten Groessen (w, len1, len2, ...) einmal berechnet werden statt in
+jedem Modul neu.
 """
 
 import hashlib
 from dataclasses import dataclass, field
 
 
-# ======================================================================
-# Algorithmus 1: gen_len2(n, lgw)
-# ======================================================================
+# gen_len2 -- Alg. 1. Bestimmt len2, also wie viele Basis-w-Ziffern man
+# braucht, um die WOTS+-Pruefsumme darzustellen. w**len2 muss dafuer groesser
+# sein als der maximal moegliche Pruefsummenwert len1*(w-1).
 def gen_len2(n, lgw):
     w = 2 ** lgw                                              # Gleichung 5.1
     len1 = -(-(8 * n) // lgw)                                 # Gleichung 5.2 (ceil)
@@ -35,9 +29,7 @@ def gen_len2(n, lgw):
     return len2
 
 
-# ======================================================================
-# Algorithmus 2: toInt(X, n)
-# ======================================================================
+# toInt -- Alg. 2. Byte-String als grosse Zahl interpretieren (big-endian).
 def toInt(X: bytes, n: int) -> int:
     total = 0
     for i in range(n):
@@ -45,9 +37,7 @@ def toInt(X: bytes, n: int) -> int:
     return total
 
 
-# ======================================================================
-# Algorithmus 3: toByte(x, n)
-# ======================================================================
+# toByte -- Alg. 3. Gegenstueck zu toInt: Zahl auf n Byte auffuellen.
 def toByte(x: int, n: int) -> bytes:
     total = x
     S = bytearray(n)
@@ -57,9 +47,8 @@ def toByte(x: int, n: int) -> bytes:
     return bytes(S)
 
 
-# ======================================================================
-# Algorithmus 4: base_2b(X, b, out_len)
-# ======================================================================
+# base_2b -- Alg. 4. Zerlegt X in out_len Ziffern zur Basis 2^b. Wird sowohl
+# fuer die WOTS+-Nachrichtenkodierung als auch fuer die FORS-Indexwahl benutzt.
 def base_2b(X: bytes, b: int, out_len: int):
     ins = 0
     bits = 0
@@ -75,9 +64,11 @@ def base_2b(X: bytes, b: int, out_len: int):
     return baseb
 
 
-# ======================================================================
-# ADRS – 32-Byte-Adresse (Abschnitt 4.2 / 4.3)
-# ======================================================================
+# ---- ADRS: die 32-Byte-Adresse aus Abschnitt 4.2/4.3 -----------------
+# Sechs Felder, aber je nach "type" bedeuten w4/w5/w6 etwas anderes (z.B. ist
+# w5 mal die Kettenposition, mal die Baumhoehe). Deswegen gibt es fuer jede
+# Bedeutung einen eigenen Setter/Getter, auch wenn intern dasselbe Feld
+# beschrieben wird -- so verwechselt man es beim Aufrufen nicht.
 WOTS_HASH = 0
 WOTS_PK = 1
 TREE = 2
@@ -88,7 +79,7 @@ FORS_PRF = 6
 
 
 class ADRS:
-    """32-Byte Adresse: layer(4) | tree(12) | type(4) | w4(4) | w5(4) | w6(4)"""
+    """32-Byte Adresse: layer(4) | tree(12) | type(4) | w4(4) | w5(4) | w6(4)."""
 
     def __init__(self):
         self.layer = 0
@@ -124,9 +115,9 @@ def ADRS_zero() -> "ADRS":
     return ADRS()
 
 
-# ======================================================================
-# Abschnitt 4.1 / 11.1: Hash- und PRF-Funktionen (SHAKE-Instanziierung)
-# ======================================================================
+# ---- Hash- und PRF-Funktionen (Abschnitt 4.1 / 11.1) ------------------
+# Wir instanziieren alles einheitlich mit SHAKE256, siehe Projektdoku fuer
+# die Begruendung (kein MGF1/HMAC noetig, native variable Ausgabelaenge).
 def PRF_msg(SK_prf: bytes, opt_rand: bytes, M: bytes, n: int) -> bytes:
     return hashlib.shake_256(SK_prf + opt_rand + M).digest(n)
 
@@ -148,13 +139,13 @@ def H(PK_seed: bytes, ADRS: "ADRS", M2: bytes, n: int) -> bytes:
 
 
 def T(PK_seed: bytes, ADRS: "ADRS", Ml: bytes, n: int) -> bytes:
-    """T_l aus Abschnitt 4.1 – komprimiert eine Nachricht beliebiger Laenge auf n Bytes."""
+    """T_l, Abschnitt 4.1 -- komprimiert eine beliebig lange Nachricht auf n Byte."""
     return hashlib.shake_256(PK_seed + ADRS.to_bytes() + Ml).digest(n)
 
 
-# ======================================================================
-# Algorithmus 5: chain(X, i, s, PK.seed, ADRS)
-# ======================================================================
+# chain -- Alg. 5. Das Herzstueck von WOTS+: F wird s-mal hintereinander
+# aufgerufen, beginnend bei Index i. ADRS.hashAddress wird bei jedem Schritt
+# aktualisiert, damit jeder Kettenschritt einen eigenen Hash-Kontext bekommt.
 def chain(X: bytes, i: int, s: int, PK_seed: bytes, ADRS: "ADRS", n: int) -> bytes:
     tmp = X
     for j in range(i, i + s):
@@ -163,14 +154,14 @@ def chain(X: bytes, i: int, s: int, PK_seed: bytes, ADRS: "ADRS", n: int) -> byt
     return tmp
 
 
-# ======================================================================
-# Parameter-Objekt (buendelt n, lgw, w, len1, len2, len_, h, hp (=h'), d, k, a, m)
-# ======================================================================
+# Params buendelt die sechs "freien" Parameter (n, lgw, hp, d, k, a) und
+# rechnet beim Erzeugen direkt alle abgeleiteten Groessen aus -- so muss das
+# jedes Modul nicht selbst nochmal tun und es kann sich nicht verrechnen.
 @dataclass
 class Params:
     n: int      # Sicherheitsparameter (Byte)
-    lgw: int    # log2(w), fest = 4
-    hp: int     # h' – Hoehe eines einzelnen XMSS-Baumes
+    lgw: int    # log2(w), bei uns immer 4
+    hp: int     # h' - Hoehe eines einzelnen XMSS-Baumes
     d: int      # Anzahl Schichten des Hypertree
     k: int      # Anzahl FORS-Baeume
     a: int      # Hoehe eines FORS-Baumes (t = 2^a)
@@ -191,8 +182,9 @@ class Params:
         self.m = (-(-(self.h - self.hp) // 8) + -(-self.hp // 8) + -(-(self.k * self.a) // 8))
 
 
-# Offizielle NIST-Parametersaetze (Tabelle 2, FIPS 205) – zu gross fuer Live-Demo,
-# aber als Referenz hinterlegt.
+# Die sechs offiziellen SHAKE-Parametersaetze aus FIPS 205, Tabelle 2. Fuer
+# den Live-Betrieb in der Streamlit-App eher als Referenz gedacht (128s
+# braucht z.B. ein paar Sekunden pro Signatur), aber getestet laufen sie alle.
 NIST_PARAMETERSAETZE = {
     "SLH-DSA-SHAKE-128s": dict(n=16, hp=9, d=7, k=14, a=12, lgw=4),
     "SLH-DSA-SHAKE-128f": dict(n=16, hp=3, d=22, k=33, a=6, lgw=4),
