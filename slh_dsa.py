@@ -1,16 +1,16 @@
 """
-SLH-DSA – Kernfunktionen (NIST FIPS 205, Abschnitt 9 & 10)
+SLH-DSA -- die eigentliche Signaturschnittstelle (FIPS 205, Abschnitt 9 & 10).
 
-Ruft die Bausteine aus wots.py, xmss.py, hypertree.py und fors.py auf:
+Hier laufen wots.py, xmss.py, hypertree.py und fors.py zusammen:
 
-  - Algorithmus 18: slh_keygen_internal   (nutzt xmss_node)
-  - Algorithmus 19: slh_sign_internal     (nutzt fors_sign, fors_pkFromSig, ht_sign)
-  - Algorithmus 20: slh_verify_internal   (nutzt fors_pkFromSig, ht_verify)
-  - Algorithmus 21: slh_keygen
-  - Algorithmus 22: slh_sign
-  - Algorithmus 23: hash_slh_sign
-  - Algorithmus 24: slh_verify
-  - Algorithmus 25: hash_slh_verify
+  Alg. 18 slh_keygen_internal    (nutzt xmss_node)
+  Alg. 19 slh_sign_internal      (nutzt fors_sign, fors_pkFromSig, ht_sign)
+  Alg. 20 slh_verify_internal    (nutzt fors_pkFromSig, ht_verify)
+  Alg. 21 slh_keygen
+  Alg. 22 slh_sign               -- "Pure"-Variante
+  Alg. 23 hash_slh_sign          -- "PreHash"-Variante
+  Alg. 24 slh_verify
+  Alg. 25 hash_slh_verify
 """
 
 import hashlib
@@ -22,11 +22,10 @@ from hypertree import ht_sign, ht_verify
 from fors import fors_sign, fors_pkFromSig
 
 
-# ======================================================================
-# Algorithmus 18: slh_keygen_internal(SK.seed, SK.prf, PK.seed)
-# ======================================================================
 def slh_keygen_internal(SK_seed: bytes, SK_prf: bytes, PK_seed: bytes, P: Params):
-    ADRS = ADRS_zero()                             # ▷ Public Key des obersten XMSS-Baumes erzeugen
+    """Alg. 18. PK_root ist schlicht die Wurzel des obersten XMSS-Baumes
+    (Schicht d-1) -- danach ist SK/PK schon fertig zusammengesetzt."""
+    ADRS = ADRS_zero()
     ADRS.setLayerAddress(P.d - 1)
     PK_root = xmss_node(SK_seed, 0, P.hp, PK_seed, ADRS, P)
     SK = (SK_seed, SK_prf, PK_seed, PK_root)
@@ -35,7 +34,9 @@ def slh_keygen_internal(SK_seed: bytes, SK_prf: bytes, PK_seed: bytes, P: Params
 
 
 def _digest_aufteilen(digest: bytes, P: Params):
-    """Gemeinsamer Teil von slh_sign_internal / slh_verify_internal (Zeilen 6-10 / 9-13)."""
+    """slh_sign_internal und slh_verify_internal brauchen beide genau diesen
+    Schritt (Digest in md / idx_tree / idx_leaf zerlegen), deshalb einmal
+    hier zusammengefasst statt doppelt zu pflegen."""
     ka_bytes = -(-(P.k * P.a) // 8)
     hhp_bytes = -(-(P.h - P.hp) // 8)
     hp_bytes = -(-P.hp // 8)
@@ -49,16 +50,17 @@ def _digest_aufteilen(digest: bytes, P: Params):
     return md, idx_tree, idx_leaf
 
 
-# ======================================================================
-# Algorithmus 19: slh_sign_internal(M, SK, addrnd)
-# ======================================================================
 def slh_sign_internal(M: bytes, SK, P: Params, addrnd: bytes = None):
+    """Alg. 19. Ablauf: Randomizer R erzeugen, daraus den Nachrichtendigest
+    berechnen, den Digest in md/idx_tree/idx_leaf aufteilen, md mit FORS
+    signieren und den daraus rekonstruierten FORS-Public-Key vom Hypertree
+    signieren lassen."""
     SK_seed, SK_prf, PK_seed, PK_root = SK
     ADRS = ADRS_zero()
-    opt_rand = addrnd if addrnd is not None else PK_seed   # ▷ deterministische Variante: opt_rand = PK.seed
-    R = PRF_msg(SK_prf, opt_rand, M, P.n)                        # ▷ Randomizer erzeugen
+    opt_rand = addrnd if addrnd is not None else PK_seed   # deterministische Variante: opt_rand = PK.seed
+    R = PRF_msg(SK_prf, opt_rand, M, P.n)
 
-    digest = H_msg(R, PK_seed, PK_root, M, P.m)                  # ▷ Nachrichten-Digest berechnen
+    digest = H_msg(R, PK_seed, PK_root, M, P.m)
     md, idx_tree, idx_leaf = _digest_aufteilen(digest, P)
 
     ADRS.setTreeAddress(idx_tree)
@@ -67,25 +69,25 @@ def slh_sign_internal(M: bytes, SK, P: Params, addrnd: bytes = None):
 
     SIG_FORS = fors_sign(md, SK_seed, PK_seed, ADRS, P)
 
-    PK_FORS = fors_pkFromSig(SIG_FORS, md, PK_seed, ADRS, P)     # ▷ FORS Public Key ermitteln
+    PK_FORS = fors_pkFromSig(SIG_FORS, md, PK_seed, ADRS, P)
     SIG_HT = ht_sign(PK_FORS, SK_seed, PK_seed, idx_tree, idx_leaf, P)
 
     SIG = (R, SIG_FORS, SIG_HT)
     return SIG
 
 
-# ======================================================================
-# Algorithmus 20: slh_verify_internal(M, SIG, PK)
-# ======================================================================
 def slh_verify_internal(M: bytes, SIG, PK, P: Params) -> bool:
+    """Alg. 20. Derselbe Weg wie beim Signieren, nur ohne SK_seed: Digest aus
+    dem mitgelieferten R nachbauen, FORS-Public-Key aus SIG_FORS rekonstruieren
+    und pruefen, ob der Hypertree-Teil dazu passt."""
     PK_seed, PK_root = PK
     R, SIG_FORS, SIG_HT = SIG
     ADRS = ADRS_zero()
 
-    digest = H_msg(R, PK_seed, PK_root, M, P.m)                  # ▷ Nachrichten-Digest berechnen
+    digest = H_msg(R, PK_seed, PK_root, M, P.m)
     md, idx_tree, idx_leaf = _digest_aufteilen(digest, P)
 
-    ADRS.setTreeAddress(idx_tree)                                # ▷ FORS Public Key berechnen
+    ADRS.setTreeAddress(idx_tree)
     ADRS.setTypeAndClear(FORS_TREE)
     ADRS.setKeyPairAddress(idx_leaf)
 
@@ -94,10 +96,9 @@ def slh_verify_internal(M: bytes, SIG, PK, P: Params) -> bool:
     return ht_verify(PK_FORS, SIG_HT, PK_seed, idx_tree, idx_leaf, PK_root, P)
 
 
-# ======================================================================
-# Algorithmus 21: slh_keygen()
-# ======================================================================
 def slh_keygen(P: Params):
+    """Alg. 21. Zieht die drei Zufalls-Seeds und delegiert den Rest an
+    slh_keygen_internal."""
     SK_seed = os.urandom(P.n)
     SK_prf = os.urandom(P.n)
     PK_seed = os.urandom(P.n)
@@ -106,12 +107,11 @@ def slh_keygen(P: Params):
     return slh_keygen_internal(SK_seed, SK_prf, PK_seed, P)
 
 
-# ======================================================================
-# Algorithmus 22: slh_sign(M, ctx, SK)
-# ======================================================================
 def slh_sign(M: bytes, ctx: bytes, SK, P: Params, addrnd: bytes = None):
+    """Alg. 22, "Pure SLH-DSA". Bettet nur ein Praefix-Byte (0x00) und den
+    Kontextstring vor M ein -- M selbst wird nicht vorher gehasht."""
     if len(ctx) > 255:
-        return None                                            # ▷ Fehlermeldung: ctx zu lang
+        return None
     if addrnd is None:
         addrnd = os.urandom(P.n)
     if addrnd is None:
@@ -121,9 +121,10 @@ def slh_sign(M: bytes, ctx: bytes, SK, P: Params, addrnd: bytes = None):
     return SIG
 
 
-# ======================================================================
-# Algorithmus 23: hash_slh_sign(M, ctx, PH, SK)
-# ======================================================================
+# Alg. 23 (hash_slh_sign) und Alg. 25 (hash_slh_verify) brauchen eine
+# OID pro Pre-Hash-Funktion, damit spaeter nachvollziehbar ist, mit welcher
+# Funktion extern vorgehasht wurde. Die Werte hier sind die DER-kodierten
+# Objekt-Identifikatoren aus FIPS 205.
 _OID = {
     "SHA-256": bytes.fromhex("0609608648016503040201"),
     "SHA-512": bytes.fromhex("0609608648016503040203"),
@@ -146,6 +147,9 @@ def _pre_hash(PH: str, M: bytes) -> bytes:
 
 
 def hash_slh_sign(M: bytes, ctx: bytes, PH: str, SK, P: Params, addrnd: bytes = None):
+    """Alg. 23, "HashSLH-DSA". Fuer lange Nachrichten: M wird vorab extern
+    gehasht (PH waehlbar), und statt M selbst wandert 0x01 || Kontext ||
+    OID(PH) || PH(M) in slh_sign_internal."""
     if len(ctx) > 255:
         return None
     if addrnd is None:
@@ -159,20 +163,16 @@ def hash_slh_sign(M: bytes, ctx: bytes, PH: str, SK, P: Params, addrnd: bytes = 
     return SIG
 
 
-# ======================================================================
-# Algorithmus 24: slh_verify(M, SIG, ctx, PK)
-# ======================================================================
 def slh_verify(M: bytes, SIG, ctx: bytes, PK, P: Params) -> bool:
+    """Alg. 24, Gegenstueck zu slh_sign."""
     if len(ctx) > 255:
         return False
     M_strich = toByte(0, 1) + toByte(len(ctx), 1) + ctx + M
     return slh_verify_internal(M_strich, SIG, PK, P)
 
 
-# ======================================================================
-# Algorithmus 25: hash_slh_verify(M, SIG, ctx, PH, PK)
-# ======================================================================
 def hash_slh_verify(M: bytes, SIG, ctx: bytes, PH: str, PK, P: Params) -> bool:
+    """Alg. 25, Gegenstueck zu hash_slh_sign."""
     if len(ctx) > 255:
         return False
     OID = _OID[PH]
