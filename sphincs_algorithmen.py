@@ -1,5 +1,6 @@
 """
-HINWEIS: Diese Datei wurde durch mehrere kleinere, konzeptgetrennte Module ersetzt:
+Diese Datei gab es zuerst als ein grosses, monolithisches Modul -- inzwischen
+ist der Code auf mehrere kleinere Dateien aufgeteilt, jede fuer ein Konzept:
 
   - sphincs_hilfsfunktionen.py   (gen_len2, toInt, toByte, base_2b, ADRS, Hashfunktionen, chain, Params)
   - wots.py                      (WOTS+: wots_pkGen, wots_sign, wots_pkFromSig)
@@ -8,8 +9,9 @@ HINWEIS: Diese Datei wurde durch mehrere kleinere, konzeptgetrennte Module erset
   - fors.py                      (FORS: fors_skGen, fors_node, fors_sign, fors_pkFromSig)
   - slh_dsa.py                   (SLH-DSA Kernfunktionen: slh_keygen, slh_sign, slh_verify, ...)
 
-Diese Datei dient nur noch der Abwaertskompatibilitaet und reicht alle Namen an die
-neuen Module weiter. Bitte in neuem Code direkt aus den obigen Modulen importieren.
+Damit alter Code (falls noch irgendwo aus "sphincs_algorithmen" importiert
+wird) nicht bricht, reicht diese Datei einfach alle Namen weiter. Fuer neuen
+Code bitte direkt aus den einzelnen Modulen oben importieren.
 """
 
 from sphincs_hilfsfunktionen import (  # noqa: F401
