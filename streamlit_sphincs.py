@@ -1,3 +1,5 @@
+import time
+
 import streamlit as st
 
 from sphincs_hilfsfunktionen import Params, NIST_PARAMETERSAETZE
@@ -6,25 +8,19 @@ from serialisierung import sk_to_hex, sk_from_hex, pk_to_hex, pk_from_hex, sig_t
 
 st.title(":blue[SLH-DSA / SPHINCS+ – Stateless Hash-Based Digital Signature (FIPS 205)]")
 
-st.caption(
-    "Schlüsselerzeugung, Signieren und Verifizieren sind unabhängige Operationen "
-    "(Algorithmen 21, 22, 24): Signieren braucht nur M, ctx, SK — Verifizieren nur "
-    "M, SIG, ctx, PK. SK, PK und SIG werden deshalb hier als Hex-Text ein-/ausgegeben, "
-    "damit man z. B. einen anderswo erzeugten Schlüssel einfügen oder eine fertige "
-    "Signatur unabhängig prüfen kann."
-)
 
-# ---------- Hilfsfunktionen ----------
+# Kleiner Helfer fuer die Anzeige: Seeds/Wurzeln sind n Byte lang und als
+# volle Hex-Zeile in der Kurzuebersicht eher unuebersichtlich, deshalb hier
+# nur eine gekuerzte Vorschau -- der vollstaendige Wert steht ohnehin unten
+# im Hex-Textfeld.
 def hex_kurz(b: bytes, max_bytes=16):
     return b[:max_bytes].hex() + "..." if len(b) > max_bytes else b.hex()
 
 
-# ======================================================================
-# Parameter – müssen für jede Operation bekannt sein, da SK/PK/SIG als reine
-# Bytes keine Parameter-Informationen enthalten (genau wie bei echten
-# SLH-DSA-Implementierungen, wo der Parametersatz z. B. über die
-# Schlüssel-/Signatur-OID mitgeteilt werden muss).
-# ======================================================================
+# Die Parameter müssen bei jeder Operation neu angegeben werden, weil SK/PK/SIG
+# als reine Bytes keine Parameter-Info enthalten — genau wie bei echten
+# SLH-DSA-Implementierungen, wo der Parametersatz z. B. über eine
+# Schlüssel-/Signatur-OID mitgeteilt werden muss.
 st.subheader("Parameter")
 
 voreinstellung = st.selectbox(
@@ -53,6 +49,29 @@ else:
     k = st.number_input("k – Anzahl FORS-Bäume", min_value=1, value=ref["k"], step=1)
     a = st.number_input("a – Höhe eines FORS-Baumes (t = 2^a)", min_value=1, value=ref["a"], step=1)
     lgw = ref["lgw"]
+
+    # Die Felder oben bleiben trotz Preset-Auswahl editierbar (bewusst, siehe
+    # "Benutzerdefiniert" weiter oben) -- deshalb hier pruefen, ob der Nutzer
+    # zwischenzeitlich einen Wert manuell veraendert hat. Sobald ein Wert vom
+    # offiziellen Preset abweicht, gelten die von NIST zugesicherten
+    # Sicherheitsstufen fuer diesen Parametersatz nicht mehr, auch wenn im
+    # Dropdown noch der Name des Presets steht.
+    abweichungen = []
+    for bezeichnung, wert, ref_wert in [
+        ("n", int(n), ref["n"]),
+        ("h'", int(hp), ref["hp"]),
+        ("d", int(d), ref["d"]),
+        ("k", int(k), ref["k"]),
+        ("a", int(a), ref["a"]),
+    ]:
+        if wert != ref_wert:
+            abweichungen.append(f"{bezeichnung}={wert} (Standard: {ref_wert})")
+    if abweichungen:
+        st.warning(
+            f"⚠️ Sie haben {', '.join(abweichungen)} manuell verändert. Das ist "
+            f"kein offizieller NIST-Parametersatz mehr — die für {voreinstellung} "
+            f"zugesicherte Sicherheitsstufe gilt für diese Kombination nicht."
+        )
 
 P = Params(n=int(n), lgw=int(lgw), hp=int(hp), d=int(d), k=int(k), a=int(a))
 
@@ -92,9 +111,12 @@ elif operation == "Verifizieren":
         PH = st.selectbox("Pre-Hash-Funktion PH", ["SHA-256", "SHA-512", "SHAKE128", "SHAKE256"])
     st.caption("Benötigt nur PK und SIG — kein privater Schlüssel nötig.")
 
-# ---------- Berechnung ----------
+# ---- eigentliche Berechnung, erst nach Klick auf den Button -------------
 if st.button("Berechnen"):
 
+    # d*2^h' + k*2^a ist proportional zur Anzahl der Baumknoten, die fuer
+    # diese Operation berechnet werden muessen -- als grobe Kostenschaetzung,
+    # bevor tatsaechlich losgerechnet wird.
     kosten = P.d * (2 ** P.hp) + P.k * (2 ** P.a)
     if kosten > 3_000_000:
         st.error(
@@ -112,12 +134,15 @@ if st.button("Berechnen"):
 
     if operation == "Schlüsselerzeugung":
         with st.spinner("Schlüssel wird erzeugt..."):
+            t0 = time.perf_counter()
             SK, PK = slh_keygen(P)
+            dauer = time.perf_counter() - t0
         SK_seed, SK_prf, PK_seed, PK_root = SK
         sk_hex = sk_to_hex(SK, P)
         pk_hex = pk_to_hex(PK, P)
         st.session_state["SK_hex"] = sk_hex
         st.session_state["PK_hex"] = pk_hex
+        st.caption(f"⏱ Rechenzeit (Algorithmus 21): {dauer:.3f} s")
         st.markdown(f"- **SK.seed =** `{hex_kurz(SK_seed)}`")
         st.markdown(f"- **SK.prf  =** `{hex_kurz(SK_prf)}`")
         st.markdown(f"- **PK.seed =** `{hex_kurz(PK_seed)}`")
@@ -139,13 +164,16 @@ if st.button("Berechnen"):
         M = M_str.encode()
         ctx = ctx_str.encode()
         with st.spinner("Signatur wird berechnet..."):
+            t0 = time.perf_counter()
             if variante.startswith("HashSLH"):
                 SIG = hash_slh_sign(M, ctx, PH, SK, P)
             else:
                 SIG = slh_sign(M, ctx, SK, P)
+            dauer = time.perf_counter() - t0
         sig_hex = sig_to_hex(SIG, P)
         st.session_state["SIG_hex"] = sig_hex
         R, SIG_FORS, SIG_HT = SIG
+        st.caption(f"⏱ Rechenzeit ({variante.split('(')[-1].rstrip(')')}): {dauer:.3f} s")
         st.markdown(f"- **R (Randomizer) =** `{hex_kurz(R)}`")
         st.markdown(f"- **|SIG_FORS| =** {len(SIG_FORS)} Elemente (k={P.k} Werte + Authentifizierungspfade)")
         st.markdown(f"- **|SIG_HT| =** {len(SIG_HT)} XMSS-Signaturen (d={P.d} Schichten)")
@@ -165,10 +193,13 @@ if st.button("Berechnen"):
         M = M_str.encode()
         ctx = ctx_str.encode()
         with st.spinner("Signatur wird geprüft..."):
+            t0 = time.perf_counter()
             if variante.startswith("HashSLH"):
                 ergebnis = hash_slh_verify(M, SIG, ctx, PH, PK, P)
             else:
                 ergebnis = slh_verify(M, SIG, ctx, PK, P)
+            dauer = time.perf_counter() - t0
+        st.caption(f"⏱ Rechenzeit ({variante.split('(')[-1].rstrip(')')}): {dauer:.3f} s")
         if ergebnis:
             st.markdown("- **Verifikationsergebnis =** ✅ gültig")
         else:
