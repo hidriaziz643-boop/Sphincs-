@@ -1,25 +1,27 @@
 """
-Serialisierung von SK, PK und SIG zu Byte-Strings (Hex) und zurueck.
+SK/PK/SIG als Byte-Strings (bzw. Hex) speichern und wieder einlesen.
 
-Diese Datei ist nicht Teil der nummerierten Algorithmen aus FIPS 205, sondern
-setzt die dort beschriebenen Datenformate technisch um:
+Kein eigener FIPS-205-Algorithmus -- die Datenformate sind dort nur
+beschrieben (Figuren 15-17), nicht als Pseudocode ausformuliert:
 
-  - Figur 15: SLH-DSA private key  = SK.seed || SK.prf || PK.seed || PK.root
-  - Figur 16: SLH-DSA public key   = PK.seed || PK.root
-  - Figur 17: SLH-DSA signature    = R || SIG_FORS || SIG_HT
+  Figur 15: SLH-DSA private key  = SK.seed || SK.prf || PK.seed || PK.root
+  Figur 16: SLH-DSA public key   = PK.seed || PK.root
+  Figur 17: SLH-DSA signature    = R || SIG_FORS || SIG_HT
 
-Damit lassen sich SK, PK und SIG unabhaengig voneinander als Hex-String
-uebertragen (z.B. in einer anderen Browser-Sitzung eingeben), genau wie es
-Algorithmus 22 (slh_sign, braucht nur M, ctx, SK) und Algorithmus 24
-(slh_verify, braucht nur M, SIG, ctx, PK) vorsehen.
+Der Grund, warum es diese Datei ueberhaupt braucht: intern sind SK/PK/SIG
+Python-Tupel aus bytes-Objekten (praktisch fuer die Algorithmen), aber wenn
+man sie z.B. in einem Textfeld der Streamlit-App eingeben oder in eine andere
+Sitzung mitnehmen will, muss daraus ein einziger zusammenhaengender String
+werden. Das passt auch inhaltlich: Alg. 22 (slh_sign) braucht wirklich nur
+M, ctx, SK, und Alg. 24 (slh_verify) nur M, SIG, ctx, PK -- die beiden
+Operationen sind bewusst voneinander unabhaengig.
+Hinweise: die Signaturelänge beträgt:∣SIG∣=n⋅(1+k(1+a)+h+d⋅len_)
 """
 
 from sphincs_hilfsfunktionen import Params
 
 
-# ======================================================================
-# SK  (Figur 15): SK.seed || SK.prf || PK.seed || PK.root
-# ======================================================================
+# ---- SK (Figur 15) ------------------------------------------------------
 def sk_to_bytes(SK, P: Params) -> bytes:
     SK_seed, SK_prf, PK_seed, PK_root = SK
     return SK_seed + SK_prf + PK_seed + PK_root
@@ -36,9 +38,7 @@ def sk_from_bytes(data: bytes, P: Params):
     return (SK_seed, SK_prf, PK_seed, PK_root)
 
 
-# ======================================================================
-# PK  (Figur 16): PK.seed || PK.root
-# ======================================================================
+# ---- PK (Figur 16) ------------------------------------------------------
 def pk_to_bytes(PK, P: Params) -> bytes:
     PK_seed, PK_root = PK
     return PK_seed + PK_root
@@ -53,9 +53,7 @@ def pk_from_bytes(data: bytes, P: Params):
     return (PK_seed, PK_root)
 
 
-# ======================================================================
-# SIG (Figur 17): R || SIG_FORS || SIG_HT
-# ======================================================================
+# ---- SIG (Figur 17) ------------------------------------------------------
 def sig_to_bytes(SIG, P: Params) -> bytes:
     R, SIG_FORS, SIG_HT = SIG
     out = bytearray(R)
@@ -75,6 +73,9 @@ def sig_to_bytes(SIG, P: Params) -> bytes:
 
 
 def sig_from_bytes(data: bytes, P: Params):
+    # Laenge vorher ausrechnen (statt einfach draufloszulesen), damit man bei
+    # einem falsch eingefuegten Hex-String sofort eine klare Fehlermeldung
+    # bekommt statt eines wirren IndexError mittendrin.
     n = P.n
     erwartete_laenge = n * (1 + P.k * (1 + P.a) + P.h + P.d * P.len_)
     if len(data) != erwartete_laenge:
@@ -105,9 +106,7 @@ def sig_from_bytes(data: bytes, P: Params):
     return (R, SIG_FORS, SIG_HT)
 
 
-# ======================================================================
-# Hex-Komfortfunktionen (fuer Texteingaben in der Streamlit-Oberflaeche)
-# ======================================================================
+# ---- Hex-Wrapper fuer die Textfelder in der Streamlit-Oberflaeche --------
 def sk_to_hex(SK, P: Params) -> str:
     return sk_to_bytes(SK, P).hex()
 
